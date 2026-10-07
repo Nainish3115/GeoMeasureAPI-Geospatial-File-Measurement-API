@@ -1,10 +1,7 @@
-"""Tests for the health check endpoint and application initialization."""
-
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-client = TestClient(app)
 
 
 def test_app_initialization() -> None:
@@ -13,15 +10,16 @@ def test_app_initialization() -> None:
     assert app.version == "0.1.0"
 
 
-def test_health_check_status_code() -> None:
+def test_health_check_status_code(client: TestClient) -> None:
     """Verify GET /health returns HTTP 200 OK."""
     response = client.get("/health")
     assert response.status_code == 200
 
 
-def test_health_check_payload() -> None:
+def test_health_check_payload(client: TestClient) -> None:
     """Verify GET /health response payload matches the expected schema."""
     response = client.get("/health")
     assert response.headers["content-type"] == "application/json"
     data = response.json()
     assert data == {"status": "healthy"}
+

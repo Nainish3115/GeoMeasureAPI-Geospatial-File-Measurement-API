@@ -50,6 +50,10 @@ htmlcov/
 *.swp
 *.swo
 
+# Storage / uploads
+storage/
+
 # OS files
 .DS_Store
 Thumbs.db
+
