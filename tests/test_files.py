@@ -32,11 +32,12 @@ def test_upload_kml_success(client: TestClient, isolated_file_service: FileServi
     # Verify physical file existence and content in isolated storage
     stored_record = isolated_file_service.get_record(file_uuid)
     assert stored_record is not None
-    assert stored_record.stored_path.exists()
-    assert stored_record.stored_path.read_bytes() == kml_content
-    assert stored_record.size_bytes == len(kml_content)
-    assert stored_record.geo_data is not None
-    assert stored_record.geo_data.feature_count == 1
+    stored_path = isolated_file_service.upload_dir / stored_record.stored_filename
+    assert stored_path.exists()
+    assert stored_path.read_bytes() == kml_content
+    assert stored_record.file_size == len(kml_content)
+    assert stored_record.feature_count == 1
+    assert stored_record.source_format == "KML"
 
 
 def test_upload_case_insensitive_extensions(client: TestClient, isolated_file_service: FileService) -> None:
@@ -139,7 +140,8 @@ def test_upload_path_traversal_sanitization(client: TestClient, isolated_file_se
         assert record is not None
 
         # Ensure stored file is strictly inside upload_dir
-        assert record.stored_path.parent.resolve() == isolated_file_service.upload_dir.resolve()
-        assert record.stored_path.exists()
+        stored_path = isolated_file_service.upload_dir / record.stored_filename
+        assert stored_path.parent.resolve() == isolated_file_service.upload_dir.resolve()
+        assert stored_path.exists()
         assert "/" not in record.original_filename
         assert "\\" not in record.original_filename

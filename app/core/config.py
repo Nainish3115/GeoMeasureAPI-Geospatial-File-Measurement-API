@@ -15,9 +15,13 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path("storage/uploads")
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # Database configuration
+    DATABASE_URL: str = "sqlite:///./storage/geomeasure.db"
+
     # Archive extraction safety configuration
     MAX_ARCHIVE_EXTRACTED_SIZE_MB: int = 150
     MAX_ARCHIVE_MEMBERS: int = 100
+
 
     @property
     def max_upload_size_bytes(self) -> int:

@@ -1,9 +1,21 @@
 """FastAPI Application entrypoint."""
 
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
 from fastapi import FastAPI
 
 from app.api import api_router
 from app.core.config import settings
+from app.db.database import init_db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Execute startup and shutdown lifecycle tasks."""
+    # Initialize database tables on application startup
+    init_db()
+    yield
 
 
 def create_application() -> FastAPI:
@@ -14,6 +26,7 @@ def create_application() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     application.include_router(api_router)

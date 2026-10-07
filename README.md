@@ -242,3 +242,44 @@ If a dataset has `crs = None` (e.g., a Shapefile lacking a `.prj` file), metric 
 - **MultiLineString:** Total combined length in metres (`m`)
 - **Point / MultiPoint:** `NOT_APPLICABLE` (`value = null`, `unit = null`)
 - **Empty / Null / Invalid Geometries:** `UNAVAILABLE` with an explanatory reason without failing the entire file
+
+---
+
+## Persistence & Database Architecture
+
+GeoMeasureAPI uses SQLite with SQLAlchemy 2.0 ORM for metadata and measurement persistence.
+
+### Relational Schema Design
+
+1. **`files` Table**:
+   - `id` (VARCHAR(36), PK): UUID of the uploaded file.
+   - `filename` (VARCHAR(255)): Original sanitized filename.
+   - `stored_path` (VARCHAR(512)): On-disk storage path (`storage/uploads/...`).
+   - `file_size_bytes` (INTEGER): File size.
+   - `file_format` (VARCHAR(50)): File format (`kml`, `shapefile_zip`).
+   - `status` (VARCHAR(50)): Processing state (`UPLOADED`, `PROCESSED`, `FAILED`).
+   - `source_crs` (VARCHAR(100), Nullable): Extracted source CRS (e.g., `EPSG:4326`).
+   - `feature_count` (INTEGER, Default 0): Number of extracted geospatial features.
+   - `processing_error` (TEXT, Nullable): Diagnostic error message if processing failed.
+   - `created_at` (DATETIME): Upload timestamp (UTC).
+   - `updated_at` (DATETIME): Modification timestamp (UTC).
+
+2. **`measurements` Table**:
+   - `id` (INTEGER, PK, Autoincrement).
+   - `file_id` (VARCHAR(36), FK $\to$ `files.id`, indexed, cascade delete): Links to parent file record.
+   - `feature_id` (INTEGER): Index/ID of feature within the file.
+   - `geometry_type` (VARCHAR(50)): Geometry type (`Polygon`, `LineString`, `Point`, etc.).
+   - `measurement_status` (VARCHAR(50)): `SUCCESS`, `NOT_APPLICABLE`, `UNAVAILABLE`.
+   - `measurement_type` (VARCHAR(50), Nullable): `AREA`, `LENGTH`, or `None`.
+   - `value` (FLOAT, Nullable): Computed metric measurement value.
+   - `unit` (VARCHAR(20), Nullable): Metric unit (`m²`, `m`).
+   - `source_crs` (VARCHAR(100), Nullable): Source CRS string.
+   - `measurement_crs` (VARCHAR(100), Nullable): Projected metric CRS used for calculation.
+   - `reason` (TEXT, Nullable): Explanatory note or error reason.
+   - `created_at` (DATETIME): Timestamp when computed.
+
+### SQLite Limitations & Production Evolution
+
+- **SQLite Suitability**: Ideal for embedded, single-instance services, local testing, and development. File locks on writes can become a bottleneck under high concurrency.
+- **Production Path**: In a distributed deployment, the database URL can be updated to PostgreSQL. If geometric filtering, spatial queries, or spatial indexing are needed in SQL, PostgreSQL + PostGIS can replace SQLite with zero changes to the repository API contracts.
+

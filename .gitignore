@@ -50,8 +50,12 @@ htmlcov/
 *.swp
 *.swo
 
-# Storage / uploads
+# Storage / uploads / databases
 storage/
+*.db
+*.sqlite
+*.sqlite3
+
 
 # OS files
 .DS_Store

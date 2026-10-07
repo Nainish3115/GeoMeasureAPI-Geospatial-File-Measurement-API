@@ -126,30 +126,23 @@ def test_kml_ingestion_features_and_crs(
     assert data["crs"] == "EPSG:4326"
     assert data["processing_error"] is None
 
-    # Verify extracted domain records
+    # Verify extracted and persisted domain records
     record = isolated_file_service.get_record(UUID(file_id))
     assert record is not None
-    assert record.geo_data is not None
-    features = record.geo_data.features
+    assert record.feature_count == 3
+    assert record.source_format == "KML"
+    assert record.crs == "EPSG:4326"
+
+    # Verify persisted measurements
+    meas_set = isolated_file_service.get_measurements(UUID(file_id))
+    assert meas_set is not None
+    features = meas_set.results
     assert len(features) == 3
 
     geom_types = {f.geometry_type for f in features}
     assert "Point" in geom_types
     assert "LineString" in geom_types
     assert "Polygon" in geom_types
-
-    # Verify properties
-    names = {f.properties.get("Name") or f.properties.get("name") for f in features}
-    assert "Survey Point" in names
-    assert "Boundary Line" in names
-    assert "Estate Polygon" in names
-
-    # Verify GeoJSON serialization mapping
-    for f in features:
-        assert f.geometry is not None
-        assert "type" in f.geometry
-        assert "coordinates" in f.geometry
-        assert f.geometry_state == GeometryState.VALID
 
 
 # ---------------------------------------------------------------------------
@@ -181,18 +174,15 @@ def test_shapefile_zip_ingestion_success(
 
     record = isolated_file_service.get_record(UUID(file_id))
     assert record is not None
-    assert record.geo_data is not None
+    assert record.feature_count == 2
+    assert record.source_format == "Shapefile"
+    assert record.crs == "EPSG:3857"
 
-    types = [f.geometry_type for f in record.geo_data.features]
+    meas_set = isolated_file_service.get_measurements(UUID(file_id))
+    assert meas_set is not None
+    types = [f.geometry_type for f in meas_set.results]
     assert "Polygon" in types
     assert "MultiPolygon" in types
-
-    # Verify attribute serialization
-    first_feat = record.geo_data.features[0]
-    assert first_feat.properties["name"] == "Parcel 1"
-    assert first_feat.properties["code"] == 101
-    assert bool(first_feat.properties["active"]) is True
-    assert isinstance(first_feat.properties["rating"], float)
 
 
 def test_shapefile_zip_missing_crs(

@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
 from app.core.exceptions import (
@@ -14,8 +15,19 @@ from app.core.exceptions import (
     StorageError,
     UnsupportedFileTypeError,
 )
-from app.models.file import FileRecord, FileStatus
+from app.db.database import SessionLocal
+from app.db.models import FileModel
+from app.models.file import (
+    FeatureMeasurement,
+    FileMeasurementSet,
+    FileStatus,
+    MeasurementStatus,
+    MeasurementType,
+)
+from app.repositories.file_repository import FileRepository
+from app.repositories.measurement_repository import MeasurementRepository
 from app.services.geospatial_service import GeospatialService, geospatial_service
+from app.services.measurement_service import MeasurementService, measurement_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +36,17 @@ CHUNK_SIZE = 1024 * 1024  # 1 MB chunk
 
 
 class FileService:
-    """Service handling file validation, storage, and metadata management."""
+    """Service handling file validation, storage, and persistent metadata management."""
 
     def __init__(
         self,
         app_settings: Settings = settings,
         geo_service: GeospatialService = geospatial_service,
+        meas_service: MeasurementService = measurement_service,
     ) -> None:
         self.settings = app_settings
         self.geo_service = geo_service
-        self._records: dict[UUID, FileRecord] = {}
+        self.measurement_service = meas_service
 
     @property
     def upload_dir(self) -> Path:
@@ -60,11 +73,15 @@ class FileService:
             )
         return suffix
 
-    async def save_and_process_file(self, upload_file: UploadFile) -> FileRecord:
-        """Stream uploaded file to disk and trigger geospatial processing synchronously.
+    async def save_and_process_file(
+        self,
+        upload_file: UploadFile,
+        db: Session | None = None,
+    ) -> FileModel:
+        """Stream uploaded file to disk and trigger geospatial processing and persistence.
 
         Transitions:
-            UPLOADED -> PROCESSING -> COMPLETED (or FAILED if parsing errors occur).
+            UPLOADED -> PROCESSING -> COMPLETED (or FAILED if parsing/persistence errors occur).
         """
         raw_filename = upload_file.filename
         safe_filename = self.sanitize_filename(raw_filename)
@@ -88,16 +105,6 @@ class FileService:
             if total_bytes == 0:
                 raise EmptyFileError()
 
-            record = FileRecord(
-                id=file_id,
-                original_filename=safe_filename,
-                stored_path=destination_path,
-                extension=extension,
-                size_bytes=total_bytes,
-                status=FileStatus.UPLOADED,
-            )
-            self._records[file_id] = record
-
         except (UnsupportedFileTypeError, EmptyFileError, FileTooLargeError):
             if destination_path.exists():
                 try:
@@ -118,34 +125,132 @@ class FileService:
         finally:
             await upload_file.close()
 
-        # Step 2: Ingest and parse geospatial content synchronously
-        self._process_record(record)
-        return record
+        # Step 2: Create DB record & process
+        session = db if db is not None else SessionLocal()
+        should_close = db is None
 
-    def _process_record(self, record: FileRecord) -> None:
-        """Synchronously process stored geospatial file and update record status."""
-        record.status = FileStatus.PROCESSING
+        try:
+            file_repo = FileRepository(session)
+            meas_repo = MeasurementRepository(session)
+
+            file_record = file_repo.create(
+                file_id=file_id,
+                original_filename=safe_filename,
+                stored_filename=stored_filename,
+                file_extension=extension,
+                file_size=total_bytes,
+                status=FileStatus.UPLOADED,
+            )
+
+            # Process geospatial content
+            self._process_record(file_record, destination_path, file_repo, meas_repo)
+            return file_record
+
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            if should_close:
+                session.close()
+
+    def _process_record(
+        self,
+        file_record: FileModel,
+        file_path: Path,
+        file_repo: FileRepository,
+        meas_repo: MeasurementRepository,
+    ) -> None:
+        """Synchronously parse geospatial file, calculate measurements, and persist in DB."""
+        file_repo.update_status(file_record.id, FileStatus.PROCESSING)
         self.geo_service.settings = self.settings
+
         try:
             geo_file = self.geo_service.parse_file(
-                file_path=record.stored_path,
-                extension=record.extension,
-                original_filename=record.original_filename,
+                file_path=file_path,
+                extension=file_record.file_extension,
+                original_filename=file_record.original_filename,
             )
-            record.geo_data = geo_file
-            record.status = FileStatus.COMPLETED
-            record.processing_error = None
-        except GeospatialProcessingError as geo_err:
-            record.status = FileStatus.FAILED
-            record.processing_error = geo_err.detail
-        except Exception as exc:
-            logger.error("Unexpected error parsing file %s: %s", record.id, exc, exc_info=True)
-            record.status = FileStatus.FAILED
-            record.processing_error = "An error occurred during geospatial parsing."
 
-    def get_record(self, file_id: UUID) -> FileRecord | None:
-        """Retrieve stored file record by ID."""
-        return self._records.get(file_id)
+            # Compute measurements
+            meas_set = self.measurement_service.measure_dataset(UUID(file_record.id), geo_file)
+
+            # Persist measurements
+            meas_repo.create_batch(file_record.id, meas_set.results)
+
+            # Update file record metadata
+            file_repo.update_metadata(
+                file_id=file_record.id,
+                source_format=geo_file.source_format,
+                crs=geo_file.crs,
+                feature_count=geo_file.feature_count,
+                status=FileStatus.COMPLETED,
+            )
+
+        except GeospatialProcessingError as geo_err:
+            logger.warning("Geospatial processing failed for %s: %s", file_record.id, geo_err.detail)
+            file_repo.update_status(file_record.id, FileStatus.FAILED, processing_error=geo_err.detail)
+
+        except Exception as exc:
+            logger.error("Unexpected error parsing file %s: %s", file_record.id, exc, exc_info=True)
+            file_repo.update_status(
+                file_record.id,
+                FileStatus.FAILED,
+                processing_error="An error occurred during geospatial parsing.",
+            )
+
+    def get_record(self, file_id: UUID | str, db: Session | None = None) -> FileModel | None:
+        """Retrieve stored file record by ID from database."""
+        session = db if db is not None else SessionLocal()
+        should_close = db is None
+        try:
+            repo = FileRepository(session)
+            return repo.get_by_id(file_id)
+        finally:
+            if should_close:
+                session.close()
+
+    def get_measurements(
+        self,
+        file_id: UUID | str,
+        db: Session | None = None,
+    ) -> FileMeasurementSet | None:
+        """Retrieve persistent measurement set for a given file ID."""
+        session = db if db is not None else SessionLocal()
+        should_close = db is None
+        try:
+            file_repo = FileRepository(session)
+            meas_repo = MeasurementRepository(session)
+
+            file_record = file_repo.get_by_id(file_id)
+            if not file_record:
+                return None
+
+            db_measurements = meas_repo.get_by_file_id(file_id)
+            results = [
+                FeatureMeasurement(
+                    feature_id=m.feature_id,
+                    geometry_type=m.geometry_type,
+                    measurement_status=MeasurementStatus(m.measurement_status),
+                    measurement_type=MeasurementType(m.measurement_type) if m.measurement_type else None,
+                    value=m.value,
+                    unit=m.unit,
+                    source_crs=m.source_crs,
+                    measurement_crs=m.measurement_crs,
+                    reason=m.reason,
+                )
+                for m in db_measurements
+            ]
+
+            meas_crs = results[0].measurement_crs if results else None
+            return FileMeasurementSet(
+                file_id=UUID(file_record.id),
+                source_crs=file_record.crs,
+                measurement_crs=meas_crs,
+                results=results,
+            )
+        finally:
+            if should_close:
+                session.close()
 
 
 # Global singleton instance for application use

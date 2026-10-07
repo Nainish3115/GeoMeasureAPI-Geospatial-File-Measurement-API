@@ -2,9 +2,11 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
 
 from app.core.exceptions import FileNotFoundHTTPError
+from app.db.database import get_db
 from app.models.file import FileStatus
 from app.schemas.files import (
     FeatureMeasurementResponse,
@@ -13,7 +15,6 @@ from app.schemas.files import (
     FileUploadResponse,
 )
 from app.services.file_service import file_service
-from app.services.measurement_service import measurement_service
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
@@ -27,13 +28,14 @@ router = APIRouter(prefix="/files", tags=["Files"])
 )
 async def upload_file(
     file: UploadFile = File(..., description="Geospatial file (.kml or .zip)"),
+    db: Session = Depends(get_db),
 ) -> FileUploadResponse:
     """Accept, securely store, and ingest uploaded geospatial file."""
-    record = await file_service.save_and_process_file(file)
+    record = await file_service.save_and_process_file(file, db=db)
     return FileUploadResponse(
-        id=record.id,
+        id=UUID(record.id),
         filename=record.original_filename,
-        status=record.status,
+        status=FileStatus(record.status),
     )
 
 
@@ -44,20 +46,22 @@ async def upload_file(
     summary="Get geospatial file details",
     description="Retrieve processing status, CRS, and feature count for an uploaded geospatial file.",
 )
-async def get_file_details(file_id: UUID) -> FileDetailResponse:
-    """Retrieve metadata, CRS, and feature count of a processed geospatial file."""
-    record = file_service.get_record(file_id)
+async def get_file_details(
+    file_id: UUID,
+    db: Session = Depends(get_db),
+) -> FileDetailResponse:
+    """Retrieve metadata, CRS, and feature count of a processed geospatial file from the database."""
+    record = file_service.get_record(file_id, db=db)
     if record is None:
         raise FileNotFoundHTTPError("File not found.")
 
-    geo_data = record.geo_data
     return FileDetailResponse(
-        id=record.id,
+        id=UUID(record.id),
         filename=record.original_filename,
-        status=record.status,
-        source_format=geo_data.source_format if geo_data else None,
-        crs=geo_data.crs if geo_data else None,
-        feature_count=geo_data.feature_count if geo_data else None,
+        status=FileStatus(record.status),
+        source_format=record.source_format,
+        crs=record.crs,
+        feature_count=record.feature_count,
         processing_error=record.processing_error,
         created_at=record.created_at,
     )
@@ -68,27 +72,32 @@ async def get_file_details(file_id: UUID) -> FileDetailResponse:
     response_model=FileMeasurementsResponse,
     status_code=status.HTTP_200_OK,
     summary="Calculate and retrieve geospatial measurements",
-    description="Computes Polygon areas (m²) and LineString lengths (m) using automated projected CRS reprojection.",
+    description="Retrieves persisted Polygon areas (m²) and LineString lengths (m) from the database.",
 )
-async def get_file_measurements(file_id: UUID) -> FileMeasurementsResponse:
-    """Compute and retrieve CRS-aware measurements for all features in the file."""
-    record = file_service.get_record(file_id)
+async def get_file_measurements(
+    file_id: UUID,
+    db: Session = Depends(get_db),
+) -> FileMeasurementsResponse:
+    """Retrieve persisted CRS-aware measurements for all features in the file."""
+    record = file_service.get_record(file_id, db=db)
     if record is None:
         raise FileNotFoundHTTPError("File not found.")
 
-    if record.status == FileStatus.FAILED:
+    if record.status == FileStatus.FAILED.value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Measurements unavailable because file processing failed: {record.processing_error or 'Unknown error'}",
         )
 
-    if record.geo_data is None:
+    if record.status == FileStatus.PROCESSING.value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File has not completed geospatial processing.",
         )
 
-    measurement_set = measurement_service.measure_dataset(file_id, record.geo_data)
+    measurement_set = file_service.get_measurements(file_id, db=db)
+    if not measurement_set:
+        raise FileNotFoundHTTPError("Measurements not found for file.")
 
     results = [
         FeatureMeasurementResponse(
