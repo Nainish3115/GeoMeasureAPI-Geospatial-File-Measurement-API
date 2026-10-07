@@ -1,7 +1,9 @@
 """Schemas package."""
 
 from app.schemas.files import (
+    FeatureMeasurementResponse,
     FileDetailResponse,
+    FileMeasurementsResponse,
     FileMetadataResponse,
     FileUploadResponse,
 )
@@ -12,4 +14,6 @@ __all__ = [
     "FileUploadResponse",
     "FileDetailResponse",
     "FileMetadataResponse",
+    "FeatureMeasurementResponse",
+    "FileMeasurementsResponse",
 ]

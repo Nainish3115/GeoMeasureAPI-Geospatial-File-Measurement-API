@@ -4,11 +4,9 @@ A production-quality backend service built with FastAPI for processing geospatia
 
 ## Current Project Status
 
-> **Phase 3: Geospatial Ingestion (Completed & Verified)**
+> **Phase 4: CRS-Aware Measurement Engine (Completed & Verified)**
 >
-> Phase 3 implements the geospatial ingestion and parsing layer for `.kml` and `.zip` Shapefiles using GeoPandas, PyProj, Shapely, Pyogrio, and Fiona. It extracts features, geometry types, GeoJSON geometries, CRS, and non-spatial attributes into a unified internal domain representation. It provides `GET /api/files/{id}/` for querying file status, format, CRS, and feature counts.
->
-> *Note: Measurement calculations (polygon area, linestring length) and CRS reprojection for measurements are intentionally NOT implemented in this phase and will be added in subsequent phases.*
+> Phase 4 implements the complete measurement engine. It calculates Polygon/MultiPolygon areas (in m²) and LineString/MultiLineString lengths (in m). Crucially, **geographic coordinates (degrees, e.g. EPSG:4326) are never directly measured**; they are automatically reprojected to an optimal projected metric CRS (such as UTM zones computed from dataset bounds). Points are flagged as `NOT_APPLICABLE`, missing CRS as `UNAVAILABLE`, and measurements are exposed via `GET /api/files/{id}/measurements/`.
 
 ---
 
@@ -19,7 +17,7 @@ A production-quality backend service built with FastAPI for processing geospatia
 - **ASGI Server:** Uvicorn
 - **Data Validation & Settings:** Pydantic v2 & Pydantic Settings
 - **Multipart Form Uploads:** python-multipart
-- **Geospatial Processing:** GeoPandas, Shapely 2.0+, PyProj, Pyogrio, Fiona
+- **Geospatial Processing & Measurements:** GeoPandas, Shapely 2.0+, PyProj, Pyogrio, Fiona
 - **Testing:** pytest & httpx
 
 ---
@@ -36,34 +34,38 @@ geospatial-measurement-api/
 │   │   ├── __init__.py             # API router aggregating routes
 │   │   └── routes/
 │   │       ├── __init__.py
-│   │       ├── files.py            # POST /api/files/ & GET /api/files/{id}/
+│   │       ├── files.py            # POST /api/files/, GET /api/files/{id}/, GET /api/files/{id}/measurements/
 │   │       └── health.py           # GET /health health check route
 │   ├── core/
 │   │   ├── __init__.py
-│   │   ├── config.py               # Settings (upload limits, archive extraction limits)
+│   │   ├── config.py               # Settings (upload limits, archive limits)
 │   │   └── exceptions.py           # Domain HTTP exceptions (400, 404, 413, 500)
 │   ├── schemas/
 │   │   ├── __init__.py
-│   │   ├── files.py                # FileUploadResponse & FileDetailResponse
+│   │   ├── files.py                # Upload, Detail, and Measurement response schemas
 │   │   └── health.py               # HealthResponse schema
 │   ├── services/
 │   │   ├── __init__.py
+│   │   ├── crs_service.py          # CRS analysis, UTM zone selection, and vector reprojection
 │   │   ├── file_service.py         # File streaming, upload orchestration & metadata
-│   │   └── geospatial_service.py   # KML & Shapefile ingestion, ZIP safety, CRS & feature extraction
+│   │   ├── geospatial_service.py   # KML & Shapefile ingestion, ZIP safety, CRS & feature extraction
+│   │   └── measurement_service.py  # CRS-aware Polygon area and LineString length engine
 │   └── models/
 │       ├── __init__.py
-│       └── file.py                 # FileRecord, ProcessedGeoFile, GeoFeature, GeometryState
+│       └── file.py                 # Domain models (FileRecord, GeoFeature, FeatureMeasurement, FileMeasurementSet)
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py                 # TestClient & isolated temporary storage fixtures
+│   ├── conftest.py                 # Isolated temporary storage test fixtures
+│   ├── test_e2e_measurements.py    # End-to-end API tests for measurement endpoints
 │   ├── test_files.py               # Upload tests (validation, sizes, extensions, traversal)
-│   ├── test_geospatial.py          # Geospatial ingestion tests (KML, Shapefiles, CRS, ZIP safety)
-│   └── test_health.py              # Health check and app initialization tests
+│   ├── test_geospatial.py          # Ingestion tests (KML, Shapefile, CRS, ZIP safety)
+│   ├── test_health.py              # Health check and app initialization tests
+│   └── test_measurements.py        # Numerical precision, units, and edge-case measurement tests
 │
 ├── .gitignore                      # Ignores storage/ uploads and virtual envs
 ├── requirements.txt                # Production and dev dependencies
-├── README.md                       # Documentation
+├── README.md                       # Comprehensive documentation
 └── pyproject.toml                  # Project config and pytest settings
 ```
 
@@ -120,22 +122,19 @@ Start the development server with Uvicorn:
 python -m uvicorn app.main:app --reload
 ```
 
-The service will be accessible at:
-- **API Documentation (Swagger UI):** `http://127.0.0.1:8000/docs`
+Interactive documentation:
+- **Swagger UI:** `http://127.0.0.1:8000/docs`
 - **ReDoc:** `http://127.0.0.1:8000/redoc`
-- **Health Check:** `http://127.0.0.1:8000/health`
 
 ---
 
 ## Running Tests
 
-Execute the automated test suite with pytest:
+Run the full pytest suite (33 tests covering foundation, security, ingestion, CRS reprojection, and numerical precision):
 
 ```bash
 python -m pytest
 ```
-
-All tests execute in isolated temporary directories and automatically clean up after execution.
 
 ---
 
@@ -147,101 +146,99 @@ All tests execute in isolated temporary directories and automatically clean up a
 GET /health
 ```
 
-**Response (HTTP 200):**
-```json
-{
-  "status": "healthy"
-}
-```
-
 ### 2. Upload and Ingest Geospatial File
 
 ```text
 POST /api/files/
 ```
+Accepts `.kml` or `.zip` (Shapefile archive).
 
-- **Content-Type:** `multipart/form-data`
-- **Form Field:** `file`
-- **Accepted File Extensions:** `.kml`, `.zip` (case-insensitive)
-- **Rejected:** Raw `.shp`, `.txt`, `.pdf`, `.csv`, `.exe`, etc.
-
-#### Example Request
-
-```bash
-curl -X POST \
-  -F "file=@survey.kml" \
-  http://127.0.0.1:8000/api/files/
-```
-
-#### Example Response (HTTP 201)
-
-```json
-{
-  "id": "c9370f2f-b8a9-4b91-8c1e-e56b0846cbfd",
-  "filename": "survey.kml",
-  "status": "COMPLETED"
-}
-```
-
-### 3. Get File Information
+### 3. Get File Details
 
 ```text
 GET /api/files/{id}/
 ```
+Returns file metadata, format, CRS, and feature count.
 
-#### Example Response (HTTP 200 - Successful Ingestion)
+### 4. Calculate Geospatial Measurements
 
-```json
-{
-  "id": "c9370f2f-b8a9-4b91-8c1e-e56b0846cbfd",
-  "filename": "survey.kml",
-  "status": "COMPLETED",
-  "source_format": "KML",
-  "crs": "EPSG:4326",
-  "feature_count": 12,
-  "processing_error": null,
-  "created_at": "2026-10-08T02:00:00Z"
-}
+```text
+GET /api/files/{id}/measurements/
 ```
 
-#### Example Response (HTTP 200 - Failed Ingestion)
+#### Example Response (HTTP 200)
 
 ```json
 {
-  "id": "0d2e3a4b-6557-47aa-b71d-7b5b8c74c06b",
-  "filename": "corrupt.zip",
-  "status": "FAILED",
-  "source_format": null,
-  "crs": null,
-  "feature_count": null,
-  "processing_error": "No Shapefile (.shp) found in the ZIP archive.",
-  "created_at": "2026-10-08T02:00:00Z"
+  "file_id": "47e874ad-83b1-40f8-adc3-172684b9aa0c",
+  "source_crs": "EPSG:4326",
+  "measurement_crs": "EPSG:32643",
+  "results": [
+    {
+      "feature_id": 0,
+      "geometry_type": "Point",
+      "measurement_status": "NOT_APPLICABLE",
+      "measurement_type": null,
+      "value": null,
+      "unit": null,
+      "source_crs": "EPSG:4326",
+      "measurement_crs": "EPSG:32643",
+      "reason": "Point geometries do not require measurement."
+    },
+    {
+      "feature_id": 1,
+      "geometry_type": "LineString",
+      "measurement_status": "SUCCESS",
+      "measurement_type": "LENGTH",
+      "value": 542.8028,
+      "unit": "m",
+      "source_crs": "EPSG:4326",
+      "measurement_crs": "EPSG:32643",
+      "reason": null
+    },
+    {
+      "feature_id": 2,
+      "geometry_type": "Polygon",
+      "measurement_status": "SUCCESS",
+      "measurement_type": "AREA",
+      "value": 300422.799789,
+      "unit": "m²",
+      "source_crs": "EPSG:4326",
+      "measurement_crs": "EPSG:32643",
+      "reason": null
+    }
+  ]
 }
 ```
 
 ---
 
-## Geospatial Ingestion Architecture
+## Measurement & CRS Strategy
 
-### 1. Unified Domain Representation
-Both `.kml` and Shapefile `.zip` formats are mapped into the same internal `ProcessedGeoFile` model:
-- `source_filename` and `source_format` (`KML` or `Shapefile`).
-- `crs`: String identifier (e.g., `EPSG:4326`, `EPSG:32643`) or `null` if the dataset lacks CRS metadata. The service never invents or defaults to EPSG:4326 when missing.
-- `feature_count`: Total features extracted.
-- `features`: List of `GeoFeature` objects containing:
-  - `feature_id`: Deterministic integer index.
-  - `geometry_type`: String (e.g., `Point`, `LineString`, `Polygon`, `MultiPolygon`).
-  - `geometry`: GeoJSON-compatible mapping (`{"type": "...", "coordinates": [...]}`).
-  - `properties`: Sanitized dictionary of attributes with NumPy/Pandas types safely coerced into standard JSON primitives (integers, floats, booleans, ISO datetime strings, `None` for NaNs).
-  - `geometry_state`: Explicit state tracking (`VALID`, `EMPTY`, `NULL`, `INVALID`).
+### 1. Invariant: No Degree-Based Calculations
+Geographic coordinate systems like `EPSG:4326` express coordinates in angular degrees ($^\circ$). Calculating `.area` or `.length` directly on geographic coordinates yields meaningless degree$^2$ or degree values that vary drastically depending on latitude. The measurement engine strictly enforces that all measurements must occur in a projected metric coordinate system.
 
-### 2. KML Processing Flow
-- KML files are read using GeoPandas with explicit pyogrio/Fiona driver registration.
-- Handles points, lines, polygons, and attributes without crashing on unprojected coordinates.
+### 2. Detection of Geographic CRS
+`pyproj.CRS.is_geographic` is used to detect geographic coordinate reference systems.
 
-### 3. Shapefile ZIP Validation & Security
-- **Zip Slip Prevention:** Rejects entries with absolute paths, `..` segments, or paths resolving outside the temporary extraction sandbox.
-- **Archive Size & Member Limits:** Enforces configurable extraction limits (`MAX_ARCHIVE_EXTRACTED_SIZE_MB`, `MAX_ARCHIVE_MEMBERS`) to prevent ZIP bomb denial-of-service attacks.
-- **Companion File Matching:** Verifies that `.shp`, `.shx`, and `.dbf` share the exact same basename (e.g., `parcels.shp`, `parcels.shx`, `parcels.dbf`).
-- **Single Shapefile Policy:** If multiple Shapefiles exist in an archive, parsing deterministically fails with a clear message requesting an archive containing exactly one Shapefile.
-- **Automatic Sandbox Cleanup:** All extractions occur inside isolated `tempfile.TemporaryDirectory()` sandboxes that are cleaned up immediately following ingestion.
+### 3. Automated Projected CRS Selection
+- **Localized Datasets:** When geographic data is encountered, the dataset's collective bounding box is computed to find the geographic centroid $(\text{lon}_{\text{cent}}, \text{lat}_{\text{cent}})$.
+- **UTM Calculation:**
+  $$\text{UTM Zone} = \lfloor(\text{lon}_{\text{cent}} + 180) / 6\rfloor + 1$$
+  - Northern Hemisphere ($\text{lat}_{\text{cent}} \ge 0$): $\text{EPSG} = 32600 + \text{zone}$
+  - Southern Hemisphere ($\text{lat}_{\text{cent}} < 0$): $\text{EPSG} = 32700 + \text{zone}$
+- **Why Not EPSG:3857 (Web Mercator)?** Web Mercator introduces severe area distortion increasing with latitude (up to hundreds of percent error away from the equator). UTM projections provide conformal, metric representations with distortion typically $< 0.1\%$ within the zone.
+
+### 4. Pre-Projected Datasets
+If the input dataset is already projected (e.g., `EPSG:32643`), the source CRS is preserved directly. If linear units are non-metric (e.g. US survey feet), linear and areal conversion factors are applied to guarantee SI metric outputs.
+
+### 5. Missing CRS Handling
+If a dataset has `crs = None` (e.g., a Shapefile lacking a `.prj` file), metric measurement cannot be safely performed without guessing. The engine sets `measurement_status = "UNAVAILABLE"` with `reason = "Source CRS is missing; metric measurement cannot be performed safely."` and never invents or assumes EPSG:4326.
+
+### 6. Supported Geometry Types & Units
+- **Polygon:** Area in square metres (`m²`)
+- **MultiPolygon:** Total combined area in square metres (`m²`)
+- **LineString:** Length in metres (`m`)
+- **MultiLineString:** Total combined length in metres (`m`)
+- **Point / MultiPoint:** `NOT_APPLICABLE` (`value = null`, `unit = null`)
+- **Empty / Null / Invalid Geometries:** `UNAVAILABLE` with an explanatory reason without failing the entire file

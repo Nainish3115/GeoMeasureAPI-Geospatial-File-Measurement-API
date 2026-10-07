@@ -1,4 +1,4 @@
-"""Data and domain models for geospatial entities and file records."""
+"""Data and domain models for geospatial entities, measurements, and file records."""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +26,21 @@ class GeometryState(str, Enum):
     INVALID = "INVALID"
 
 
+class MeasurementStatus(str, Enum):
+    """Status of a feature measurement operation."""
+
+    SUCCESS = "SUCCESS"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class MeasurementType(str, Enum):
+    """Type of geometric measurement calculated."""
+
+    AREA = "AREA"
+    LENGTH = "LENGTH"
+
+
 @dataclass
 class GeoFeature:
     """Normalized domain representation of an extracted geospatial feature."""
@@ -47,6 +62,31 @@ class ProcessedGeoFile:
     crs: str | None
     feature_count: int
     features: list[GeoFeature] = field(default_factory=list)
+
+
+@dataclass
+class FeatureMeasurement:
+    """Domain model representing a single feature's measurement result."""
+
+    feature_id: int
+    geometry_type: str | None
+    measurement_status: MeasurementStatus
+    measurement_type: MeasurementType | None = None
+    value: float | None = None
+    unit: str | None = None
+    source_crs: str | None = None
+    measurement_crs: str | None = None
+    reason: str | None = None
+
+
+@dataclass
+class FileMeasurementSet:
+    """Domain model aggregating all feature measurements for a file."""
+
+    file_id: UUID
+    source_crs: str | None
+    measurement_crs: str | None
+    results: list[FeatureMeasurement] = field(default_factory=list)
 
 
 @dataclass
