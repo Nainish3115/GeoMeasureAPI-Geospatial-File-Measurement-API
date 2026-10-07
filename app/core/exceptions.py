@@ -1,4 +1,4 @@
-"""Exceptions for file upload and storage operations."""
+"""Domain HTTP exceptions for file upload and geospatial processing."""
 
 from fastapi import HTTPException, status
 
@@ -37,3 +37,24 @@ class StorageError(FileServiceError):
 
     def __init__(self, detail: str = "An error occurred while saving the uploaded file.") -> None:
         super().__init__(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail)
+
+
+class FileNotFoundHTTPError(FileServiceError):
+    """Raised when a requested file record is not found."""
+
+    def __init__(self, detail: str = "File not found.") -> None:
+        super().__init__(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+class GeospatialProcessingError(FileServiceError):
+    """Raised when geospatial parsing or validation fails."""
+
+    def __init__(self, detail: str, status_code: int = status.HTTP_400_BAD_REQUEST) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+
+
+class ArchiveSecurityError(GeospatialProcessingError):
+    """Raised when an archive contains suspicious paths, exceeds limits, or triggers security checks."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail=detail, status_code=status.HTTP_400_BAD_REQUEST)

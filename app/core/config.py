@@ -15,10 +15,20 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path("storage/uploads")
     MAX_UPLOAD_SIZE_MB: int = 50
 
+    # Archive extraction safety configuration
+    MAX_ARCHIVE_EXTRACTED_SIZE_MB: int = 150
+    MAX_ARCHIVE_MEMBERS: int = 100
+
     @property
     def max_upload_size_bytes(self) -> int:
         """Return maximum upload size in bytes."""
         return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+    @property
+    def max_archive_extracted_bytes(self) -> int:
+        """Return maximum archive extracted size in bytes."""
+        return self.MAX_ARCHIVE_EXTRACTED_SIZE_MB * 1024 * 1024
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

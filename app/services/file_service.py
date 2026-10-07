@@ -1,4 +1,4 @@
-"""File upload, validation, and storage service."""
+"""File upload, validation, storage, and geospatial processing orchestration service."""
 
 import logging
 from pathlib import Path
@@ -10,10 +10,12 @@ from app.core.config import Settings, settings
 from app.core.exceptions import (
     EmptyFileError,
     FileTooLargeError,
+    GeospatialProcessingError,
     StorageError,
     UnsupportedFileTypeError,
 )
 from app.models.file import FileRecord, FileStatus
+from app.services.geospatial_service import GeospatialService, geospatial_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,13 @@ CHUNK_SIZE = 1024 * 1024  # 1 MB chunk
 class FileService:
     """Service handling file validation, storage, and metadata management."""
 
-    def __init__(self, app_settings: Settings = settings) -> None:
+    def __init__(
+        self,
+        app_settings: Settings = settings,
+        geo_service: GeospatialService = geospatial_service,
+    ) -> None:
         self.settings = app_settings
+        self.geo_service = geo_service
         self._records: dict[UUID, FileRecord] = {}
 
     @property
@@ -39,7 +46,6 @@ class FileService:
         """Sanitize client-provided filename to extract clean basename."""
         if not filename:
             raise UnsupportedFileTypeError("Filename cannot be empty.")
-        # Path(filename).name strips directory paths (e.g., ../../evil.kml -> evil.kml)
         safe_name = Path(filename).name.strip()
         if not safe_name:
             raise UnsupportedFileTypeError("Invalid filename.")
@@ -54,21 +60,17 @@ class FileService:
             )
         return suffix
 
-    async def save_uploaded_file(self, upload_file: UploadFile) -> FileRecord:
-        """Stream uploaded file to disk with size validation and return metadata record.
+    async def save_and_process_file(self, upload_file: UploadFile) -> FileRecord:
+        """Stream uploaded file to disk and trigger geospatial processing synchronously.
 
-        Raises:
-            UnsupportedFileTypeError: If extension is unsupported or filename is invalid.
-            EmptyFileError: If file is 0 bytes.
-            FileTooLargeError: If file exceeds maximum configured size.
-            StorageError: If an unexpected error occurs during disk write.
+        Transitions:
+            UPLOADED -> PROCESSING -> COMPLETED (or FAILED if parsing errors occur).
         """
         raw_filename = upload_file.filename
         safe_filename = self.sanitize_filename(raw_filename)
         extension = self.validate_extension(safe_filename)
 
         file_id = uuid4()
-        # Stored filename uses UUID + lowercase extension to prevent path traversal or collision
         stored_filename = f"{file_id}{extension}"
         destination_path = self.upload_dir / stored_filename
 
@@ -95,10 +97,8 @@ class FileService:
                 status=FileStatus.UPLOADED,
             )
             self._records[file_id] = record
-            return record
 
         except (UnsupportedFileTypeError, EmptyFileError, FileTooLargeError):
-            # Clean up partial/empty file if created
             if destination_path.exists():
                 try:
                     destination_path.unlink()
@@ -117,6 +117,31 @@ class FileService:
 
         finally:
             await upload_file.close()
+
+        # Step 2: Ingest and parse geospatial content synchronously
+        self._process_record(record)
+        return record
+
+    def _process_record(self, record: FileRecord) -> None:
+        """Synchronously process stored geospatial file and update record status."""
+        record.status = FileStatus.PROCESSING
+        self.geo_service.settings = self.settings
+        try:
+            geo_file = self.geo_service.parse_file(
+                file_path=record.stored_path,
+                extension=record.extension,
+                original_filename=record.original_filename,
+            )
+            record.geo_data = geo_file
+            record.status = FileStatus.COMPLETED
+            record.processing_error = None
+        except GeospatialProcessingError as geo_err:
+            record.status = FileStatus.FAILED
+            record.processing_error = geo_err.detail
+        except Exception as exc:
+            logger.error("Unexpected error parsing file %s: %s", record.id, exc, exc_info=True)
+            record.status = FileStatus.FAILED
+            record.processing_error = "An error occurred during geospatial parsing."
 
     def get_record(self, file_id: UUID) -> FileRecord | None:
         """Retrieve stored file record by ID."""
