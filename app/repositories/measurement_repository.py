@@ -3,7 +3,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import MeasurementModel
@@ -15,6 +15,14 @@ class MeasurementRepository:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+
+    def delete_by_file_id(self, file_id: UUID | str) -> int:
+        """Delete any existing measurements for a given file ID."""
+        file_id_str = str(file_id)
+        stmt = delete(MeasurementModel).where(MeasurementModel.file_id == file_id_str)
+        result = self.db.execute(stmt)
+        self.db.commit()
+        return result.rowcount  # type: ignore
 
     def create_batch(
         self,

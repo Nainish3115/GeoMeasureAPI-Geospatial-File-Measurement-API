@@ -126,3 +126,17 @@ class FileMeasurementsResponse(BaseModel):
             }
         },
     )
+
+
+class ErrorResponse(BaseModel):
+    """Consistent error payload schema."""
+
+    detail: str = Field(..., description="Human-readable description of the error")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "detail": "File not found."
+            }
+        }
+    )

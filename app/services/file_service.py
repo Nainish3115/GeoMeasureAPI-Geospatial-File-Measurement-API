@@ -141,6 +141,7 @@ class FileService:
                 file_size=total_bytes,
                 status=FileStatus.UPLOADED,
             )
+            logger.info("Uploaded file accepted: id=%s filename=%s size=%d bytes", file_id, safe_filename, total_bytes)
 
             # Process geospatial content
             self._process_record(file_record, destination_path, file_repo, meas_repo)
@@ -148,6 +149,11 @@ class FileService:
 
         except Exception:
             session.rollback()
+            if destination_path.exists():
+                try:
+                    destination_path.unlink()
+                except OSError as cleanup_err:
+                    logger.warning("Failed to clean up file %s on DB error: %s", destination_path, cleanup_err)
             raise
         finally:
             if should_close:
@@ -161,6 +167,7 @@ class FileService:
         meas_repo: MeasurementRepository,
     ) -> None:
         """Synchronously parse geospatial file, calculate measurements, and persist in DB."""
+        logger.info("Starting geospatial processing for file id=%s (%s)", file_record.id, file_record.original_filename)
         file_repo.update_status(file_record.id, FileStatus.PROCESSING)
         self.geo_service.settings = self.settings
 
@@ -185,13 +192,29 @@ class FileService:
                 feature_count=geo_file.feature_count,
                 status=FileStatus.COMPLETED,
             )
+            logger.info(
+                "Completed geospatial processing for file id=%s: format=%s crs=%s features=%d measurements=%d",
+                file_record.id,
+                geo_file.source_format,
+                geo_file.crs,
+                geo_file.feature_count,
+                len(meas_set.results),
+            )
 
         except GeospatialProcessingError as geo_err:
             logger.warning("Geospatial processing failed for %s: %s", file_record.id, geo_err.detail)
+            try:
+                meas_repo.delete_by_file_id(file_record.id)
+            except Exception as clean_err:
+                logger.warning("Failed to clear measurements for failed file %s: %s", file_record.id, clean_err)
             file_repo.update_status(file_record.id, FileStatus.FAILED, processing_error=geo_err.detail)
 
         except Exception as exc:
             logger.error("Unexpected error parsing file %s: %s", file_record.id, exc, exc_info=True)
+            try:
+                meas_repo.delete_by_file_id(file_record.id)
+            except Exception as clean_err:
+                logger.warning("Failed to clear measurements for failed file %s: %s", file_record.id, clean_err)
             file_repo.update_status(
                 file_record.id,
                 FileStatus.FAILED,

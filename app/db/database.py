@@ -5,13 +5,20 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
 
 logger = logging.getLogger(__name__)
+
+
+def _set_sqlite_pragma(dbapi_connection: object, connection_record: object) -> None:
+    """Enable foreign key constraints on SQLite connections."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def get_engine_args(database_url: str) -> dict:
@@ -36,6 +43,8 @@ def get_engine() -> Engine:
             echo=settings.DEBUG,
             **get_engine_args(settings.DATABASE_URL),
         )
+        if settings.DATABASE_URL.startswith("sqlite"):
+            event.listen(_engine, "connect", _set_sqlite_pragma)
         _SessionLocal = sessionmaker(
             bind=_engine,
             autocommit=False,
@@ -56,6 +65,8 @@ def set_engine_and_sessionmaker(new_engine: Engine) -> None:
     """Allow overriding engine and sessionmaker (used for test isolation)."""
     global _engine, _SessionLocal
     _engine = new_engine
+    if str(new_engine.url).startswith("sqlite"):
+        event.listen(_engine, "connect", _set_sqlite_pragma)
     _SessionLocal = sessionmaker(
         bind=new_engine,
         autocommit=False,

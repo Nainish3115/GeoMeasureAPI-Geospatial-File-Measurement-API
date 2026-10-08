@@ -9,6 +9,7 @@ from app.core.exceptions import FileNotFoundHTTPError
 from app.db.database import get_db
 from app.models.file import FileStatus
 from app.schemas.files import (
+    ErrorResponse,
     FeatureMeasurementResponse,
     FileDetailResponse,
     FileMeasurementsResponse,
@@ -24,7 +25,13 @@ router = APIRouter(prefix="/files", tags=["Files"])
     response_model=FileUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload and ingest geospatial file",
-    description="Upload a .kml file or a .zip file containing a Shapefile to extract features and CRS.",
+    description="Upload a .kml file or a .zip file containing a Shapefile to extract features, CRS, and persist measurements.",
+    responses={
+        201: {"description": "File successfully uploaded and queued/processed", "model": FileUploadResponse},
+        400: {"description": "Validation error (unsupported format, empty file, archive security issue)", "model": ErrorResponse},
+        413: {"description": "Uploaded file exceeds configured maximum size limit", "model": ErrorResponse},
+        500: {"description": "Internal server or storage error", "model": ErrorResponse},
+    },
 )
 async def upload_file(
     file: UploadFile = File(..., description="Geospatial file (.kml or .zip)"),
@@ -44,7 +51,12 @@ async def upload_file(
     response_model=FileDetailResponse,
     status_code=status.HTTP_200_OK,
     summary="Get geospatial file details",
-    description="Retrieve processing status, CRS, and feature count for an uploaded geospatial file.",
+    description="Retrieve processing status, source CRS, and feature count for an uploaded geospatial file.",
+    responses={
+        200: {"description": "File metadata successfully retrieved", "model": FileDetailResponse},
+        404: {"description": "File not found", "model": ErrorResponse},
+        422: {"description": "Validation error (invalid UUID format)"},
+    },
 )
 async def get_file_details(
     file_id: UUID,
@@ -73,6 +85,12 @@ async def get_file_details(
     status_code=status.HTTP_200_OK,
     summary="Calculate and retrieve geospatial measurements",
     description="Retrieves persisted Polygon areas (m²) and LineString lengths (m) from the database.",
+    responses={
+        200: {"description": "Persisted measurements successfully retrieved", "model": FileMeasurementsResponse},
+        400: {"description": "Processing failed or file is still processing", "model": ErrorResponse},
+        404: {"description": "File or measurements not found", "model": ErrorResponse},
+        422: {"description": "Validation error (invalid UUID format)"},
+    },
 )
 async def get_file_measurements(
     file_id: UUID,

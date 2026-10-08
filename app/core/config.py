@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api"
     DEBUG: bool = False
 
+    # Application environment
+    ENVIRONMENT: str = "production"
+    LOG_LEVEL: str = "INFO"
+
     # File storage configuration
     UPLOAD_DIR: Path = Path("storage/uploads")
     MAX_UPLOAD_SIZE_MB: int = 50

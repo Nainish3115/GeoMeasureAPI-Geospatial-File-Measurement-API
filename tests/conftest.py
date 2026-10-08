@@ -33,6 +33,11 @@ def test_db_session(tmp_path: Path) -> Generator[Session, None, None]:
         db_url,
         connect_args={"check_same_thread": False},
     )
+    # Enable SQLite foreign key constraints for test engine
+    from app.db.database import _set_sqlite_pragma
+    from sqlalchemy import event
+    event.listen(test_engine, "connect", _set_sqlite_pragma)
+
     Base.metadata.create_all(bind=test_engine)
 
     # Set globally active test engine and sessionmaker
