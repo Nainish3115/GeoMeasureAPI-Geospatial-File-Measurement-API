@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import re
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
@@ -56,12 +57,29 @@ class FileService:
         return upload_path
 
     def sanitize_filename(self, filename: str | None) -> str:
-        """Sanitize client-provided filename to extract clean basename."""
+        """Sanitize client-provided filename to extract clean basename across POSIX and Windows.
+
+        Treats both '/' and '\\' as path separators regardless of the host OS,
+        strips drive prefixes (e.g. C:), and guarantees that directory traversal
+        components ('..', '.') and separators are completely stripped.
+        """
         if not filename:
             raise UnsupportedFileTypeError("Filename cannot be empty.")
-        safe_name = Path(filename).name.strip()
+
+        # Normalize backslashes to forward slashes for universal path handling
+        normalized = filename.replace("\\", "/").strip()
+        # Remove any leading Windows drive letter prefix (e.g., 'C:/' -> '/')
+        normalized = re.sub(r"^[a-zA-Z]:", "", normalized)
+
+        # Extract the pure basename
+        parts = [p for p in normalized.split("/") if p and p not in (".", "..")]
+        if not parts:
+            raise UnsupportedFileTypeError("Invalid filename.")
+
+        safe_name = parts[-1].strip()
         if not safe_name:
             raise UnsupportedFileTypeError("Invalid filename.")
+
         return safe_name
 
     def validate_extension(self, filename: str) -> str:

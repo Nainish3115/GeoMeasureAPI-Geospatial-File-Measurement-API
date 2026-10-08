@@ -29,7 +29,9 @@ class FileTooLargeError(FileServiceError):
 
     def __init__(self, max_size_mb: int) -> None:
         detail = f"File exceeds maximum allowed size of {max_size_mb} MB."
-        super().__init__(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=detail)
+        # Use HTTP_413_CONTENT_TOO_LARGE where supported to eliminate deprecation warning
+        status_code = getattr(status, "HTTP_413_CONTENT_TOO_LARGE", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        super().__init__(status_code=status_code, detail=detail)
 
 
 class StorageError(FileServiceError):

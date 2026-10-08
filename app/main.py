@@ -70,8 +70,10 @@ def create_application() -> FastAPI:
     @application.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         logger.info("Validation error on %s %s: %s", request.method, request.url.path, exc.errors())
+        # Use HTTP_422_UNPROCESSABLE_CONTENT where supported to eliminate deprecation warning
+        status_code = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", status.HTTP_422_UNPROCESSABLE_ENTITY)
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status_code,
             content={"detail": exc.errors()},
         )
 
